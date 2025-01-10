@@ -1,12 +1,12 @@
 import type { IRoom } from '@rocket.chat/core-typings';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import { useEndpoint, useTranslation, useToastMessageDispatch } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
-import { useFormatDateAndTime } from '../../../../../hooks/useFormatDateAndTime';
-import { useTabBarClose } from '../../../contexts/ToolboxContext';
 import InviteUsers from './InviteUsers';
+import { useFormatDateAndTime } from '../../../../../hooks/useFormatDateAndTime';
+import { useRoomToolbox } from '../../../contexts/RoomToolboxContext';
 
 type InviteUsersWithDataProps = {
 	rid: IRoom['_id'];
@@ -33,14 +33,14 @@ const InviteUsersWithData = ({ rid, onClickBack }: InviteUsersWithDataProps): Re
 		error: undefined as Error | undefined,
 	});
 
-	const handleClose = useTabBarClose();
+	const { closeTab } = useRoomToolbox();
 	const format = useFormatDateAndTime();
 	const findOrCreateInvite = useEndpoint('POST', '/v1/findOrCreateInvite');
 
-	const handleEdit = useMutableCallback(() => setInviteState((prevState) => ({ ...prevState, isEditing: true })));
-	const handleBackToLink = useMutableCallback(() => setInviteState((prevState) => ({ ...prevState, isEditing: false })));
+	const handleEdit = useEffectEvent(() => setInviteState((prevState) => ({ ...prevState, isEditing: true })));
+	const handleBackToLink = useEffectEvent(() => setInviteState((prevState) => ({ ...prevState, isEditing: false })));
 
-	const linkExpirationText = useMutableCallback((data) => {
+	const linkExpirationText = useEffectEvent((data) => {
 		if (!data) {
 			return '';
 		}
@@ -78,7 +78,7 @@ const InviteUsersWithData = ({ rid, onClickBack }: InviteUsersWithDataProps): Re
 		})();
 	}, [dispatchToastMessage, t, findOrCreateInvite, linkExpirationText, rid, days, maxUses]);
 
-	const handleGenerateLink = useMutableCallback((daysAndMaxUses) => {
+	const handleGenerateLink = useEffectEvent((daysAndMaxUses) => {
 		setInviteState((prevState) => ({ ...prevState, daysAndMaxUses, isEditing: false }));
 	});
 
@@ -89,7 +89,7 @@ const InviteUsersWithData = ({ rid, onClickBack }: InviteUsersWithDataProps): Re
 			linkText={url}
 			captionText={caption}
 			daysAndMaxUses={{ days, maxUses }}
-			onClose={handleClose}
+			onClose={closeTab}
 			onClickBackMembers={onClickBack}
 			onClickBackLink={handleBackToLink}
 			onClickEdit={handleEdit}

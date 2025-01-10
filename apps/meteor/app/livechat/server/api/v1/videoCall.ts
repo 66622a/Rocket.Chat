@@ -1,20 +1,22 @@
+import { Message, Omnichannel } from '@rocket.chat/core-services';
+import type { IOmnichannelRoom } from '@rocket.chat/core-typings';
+import { Messages, Settings, Rooms } from '@rocket.chat/models';
 import { isGETWebRTCCall, isPUTWebRTCCallId } from '@rocket.chat/rest-typings';
-import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
-import { Settings } from '@rocket.chat/models';
 
-import { Messages, Rooms } from '../../../../models/server';
-import { settings as rcSettings } from '../../../../settings/server';
+import { i18n } from '../../../../../server/lib/i18n';
 import { API } from '../../../../api/server';
+import { canSendMessageAsync } from '../../../../authorization/server/functions/canSendMessage';
+import { notifyOnRoomChangedById, notifyOnSettingChanged } from '../../../../lib/server/lib/notifyListener';
+import { settings as rcSettings } from '../../../../settings/server';
+import { Livechat } from '../../lib/LivechatTyped';
 import { settings } from '../lib/livechat';
-import { canSendMessage } from '../../../../authorization/server';
-import { Livechat } from '../../lib/Livechat';
 
 API.v1.addRoute(
 	'livechat/webrtc.call',
 	{ authRequired: true, permissionsRequired: ['view-l-room'], validateParams: isGETWebRTCCall },
 	{
 		async get() {
-			const room = canSendMessage(
+			const room = await canSendMessageAsync(
 				this.queryParams.rid,
 				{
 					uid: this.userId,
@@ -25,6 +27,10 @@ API.v1.addRoute(
 			);
 			if (!room) {
 				throw new Error('invalid-room');
+			}
+
+			if (!(await Omnichannel.isWithinMACLimit(room as IOmnichannelRoom))) {
+				throw new Error('error-mac-limit-reached');
 			}
 
 			const webrtcCallingAllowed = rcSettings.get('WebRTC_Enabled') === true && rcSettings.get('Omnichannel_call_provider') === 'WebRTC';
@@ -40,19 +46,20 @@ API.v1.addRoute(
 			let { callStatus } = room;
 
 			if (!callStatus || callStatus === 'ended' || callStatus === 'declined') {
-				await Settings.incrementValueById('WebRTC_Calls_Count');
+				const value = await Settings.incrementValueById('WebRTC_Calls_Count', 1, { returnDocument: 'after' });
+				if (value) {
+					void notifyOnSettingChanged(value);
+				}
+
 				callStatus = 'ringing';
-				await Rooms.setCallStatusAndCallStartTime(room._id, callStatus);
-				await Messages.createWithTypeRoomIdMessageAndUser(
-					'livechat_webrtc_video_call',
-					room._id,
-					TAPi18n.__('Join_my_room_to_start_the_video_call'),
-					this.user,
-					{
-						actionLinks: config.theme.actionLinks.webrtc,
-					},
-				);
+
+				(await Rooms.setCallStatusAndCallStartTime(room._id, callStatus)).modifiedCount && void notifyOnRoomChangedById(room._id);
+
+				await Message.saveSystemMessage('livechat_webrtc_video_call', room._id, i18n.t('Join_my_room_to_start_the_video_call'), this.user, {
+					actionLinks: config.theme.actionLinks.webrtc,
+				});
 			}
+
 			const videoCall = {
 				rid: room._id,
 				provider: 'webrtc',
@@ -71,7 +78,7 @@ API.v1.addRoute(
 			const { callId } = this.urlParams;
 			const { rid, status } = this.bodyParams;
 
-			const room = canSendMessage(
+			const room = await canSendMessageAsync(
 				rid,
 				{
 					uid: this.userId,
@@ -82,6 +89,10 @@ API.v1.addRoute(
 			);
 			if (!room) {
 				throw new Error('invalid-room');
+			}
+
+			if (!(await Omnichannel.isWithinMACLimit(room as IOmnichannelRoom))) {
+				throw new Error('error-mac-limit-reached');
 			}
 
 			const call = await Messages.findOneById(callId);

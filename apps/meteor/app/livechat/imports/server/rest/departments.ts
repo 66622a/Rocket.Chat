@@ -1,10 +1,11 @@
+import type { ILivechatDepartment } from '@rocket.chat/core-typings';
+import { LivechatDepartment, LivechatDepartmentAgents } from '@rocket.chat/models';
 import { isGETLivechatDepartmentProps, isPOSTLivechatDepartmentProps } from '@rocket.chat/rest-typings';
 import { Match, check } from 'meteor/check';
-import { LivechatDepartment, LivechatDepartmentAgents } from '@rocket.chat/models';
 
 import { API } from '../../../../api/server';
+import { getPaginationItems } from '../../../../api/server/helpers/getPaginationItems';
 import { hasPermissionAsync } from '../../../../authorization/server/functions/hasPermission';
-import { Livechat } from '../../../server/lib/Livechat';
 import {
 	findDepartments,
 	findDepartmentById,
@@ -13,8 +14,14 @@ import {
 	findDepartmentAgents,
 	findArchivedDepartments,
 } from '../../../server/api/lib/departments';
-import { LivechatEnterprise } from '../../../../../ee/app/livechat-enterprise/server/lib/LivechatEnterprise';
-import { DepartmentHelper } from '../../../server/lib/Departments';
+import {
+	saveDepartment,
+	archiveDepartment,
+	unarchiveDepartment,
+	saveDepartmentAgents,
+	removeDepartment,
+} from '../../../server/lib/departmentsLib';
+import { isDepartmentCreationAvailable } from '../../../server/lib/isDepartmentCreationAvailable';
 
 API.v1.addRoute(
 	'livechat/department',
@@ -28,8 +35,8 @@ API.v1.addRoute(
 	},
 	{
 		async get() {
-			const { offset, count } = this.getPaginationItems();
-			const { sort } = this.parseJsonQuery();
+			const { offset, count } = await getPaginationItems(this.queryParams);
+			const { sort } = await this.parseJsonQuery();
 
 			const { text, enabled, onlyMyDepartments, excludeDepartmentId, showArchived } = this.queryParams;
 
@@ -55,10 +62,18 @@ API.v1.addRoute(
 			check(this.bodyParams, {
 				department: Object,
 				agents: Match.Maybe(Array),
+				departmentUnit: Match.Maybe({ _id: Match.Optional(String) }),
 			});
 
 			const agents = this.bodyParams.agents ? { upsert: this.bodyParams.agents } : {};
-			const department = await LivechatEnterprise.saveDepartment(null, this.bodyParams.department, agents);
+			const { departmentUnit } = this.bodyParams;
+			const department = await saveDepartment(
+				this.userId,
+				null,
+				this.bodyParams.department as ILivechatDepartment,
+				agents,
+				departmentUnit || {},
+			);
 
 			if (department) {
 				return API.v1.success({
@@ -107,42 +122,33 @@ API.v1.addRoute(
 			const permissionToSave = await hasPermissionAsync(this.userId, 'manage-livechat-departments');
 			const permissionToAddAgents = await hasPermissionAsync(this.userId, 'add-livechat-department-agents');
 
-			check(this.urlParams, {
-				_id: String,
-			});
-
 			check(this.bodyParams, {
 				department: Object,
 				agents: Match.Maybe(Array),
+				departmentUnit: Match.Maybe({ _id: Match.Optional(String) }),
 			});
 
 			const { _id } = this.urlParams;
-			const { department, agents } = this.bodyParams;
+			const { department, agents, departmentUnit } = this.bodyParams;
 
-			let success;
-			if (permissionToSave) {
-				success = await LivechatEnterprise.saveDepartment(_id, department);
+			if (!permissionToSave) {
+				throw new Error('error-not-allowed');
 			}
 
-			if (success && agents && permissionToAddAgents) {
-				success = Livechat.saveDepartmentAgents(_id, { upsert: agents });
-			}
+			const agentParam = permissionToAddAgents && agents ? { upsert: agents } : {};
+			await saveDepartment(this.userId, _id, department, agentParam, departmentUnit || {});
 
-			if (success) {
-				return API.v1.success({
-					department: await LivechatDepartment.findOneById(_id),
-					agents: await LivechatDepartmentAgents.find({ departmentId: _id }).toArray(),
-				});
-			}
-
-			return API.v1.failure();
+			return API.v1.success({
+				department: await LivechatDepartment.findOneById(_id),
+				agents: await LivechatDepartmentAgents.findByDepartmentId(_id).toArray(),
+			});
 		},
 		async delete() {
 			check(this.urlParams, {
 				_id: String,
 			});
 
-			await DepartmentHelper.removeDepartment(this.urlParams._id);
+			await removeDepartment(this.urlParams._id);
 
 			return API.v1.success();
 		},
@@ -160,8 +166,8 @@ API.v1.addRoute(
 	},
 	{
 		async get() {
-			const { offset, count } = this.getPaginationItems();
-			const { sort } = this.parseJsonQuery();
+			const { offset, count } = await getPaginationItems(this.queryParams);
+			const { sort } = await this.parseJsonQuery();
 
 			const { text, onlyMyDepartments, excludeDepartmentId } = this.queryParams;
 
@@ -190,11 +196,9 @@ API.v1.addRoute(
 	},
 	{
 		async post() {
-			if (await Livechat.archiveDepartment(this.urlParams._id)) {
-				return API.v1.success();
-			}
+			await archiveDepartment(this.urlParams._id);
 
-			return API.v1.failure();
+			return API.v1.success();
 		},
 	},
 );
@@ -207,11 +211,8 @@ API.v1.addRoute(
 	},
 	{
 		async post() {
-			if (await Livechat.unarchiveDepartment(this.urlParams._id)) {
-				return API.v1.success();
-			}
-
-			return API.v1.failure();
+			await unarchiveDepartment(this.urlParams._id);
+			return API.v1.success();
 		},
 	},
 );
@@ -252,9 +253,8 @@ API.v1.addRoute(
 			check(this.urlParams, {
 				_id: String,
 			});
-
-			const { offset, count } = this.getPaginationItems();
-			const { sort } = this.parseJsonQuery();
+			const { offset, count } = await getPaginationItems(this.queryParams);
+			const { sort } = await this.parseJsonQuery();
 
 			const agents = await findDepartmentAgents({
 				userId: this.userId,
@@ -269,10 +269,6 @@ API.v1.addRoute(
 			return API.v1.success(agents);
 		},
 		async post() {
-			check(this.urlParams, {
-				_id: String,
-			});
-
 			check(
 				this.bodyParams,
 				Match.ObjectIncluding({
@@ -280,7 +276,7 @@ API.v1.addRoute(
 					remove: Array,
 				}),
 			);
-			await Livechat.saveDepartmentAgents(this.urlParams._id, this.bodyParams);
+			await saveDepartmentAgents(this.urlParams._id, this.bodyParams);
 
 			return API.v1.success();
 		},
@@ -293,7 +289,7 @@ API.v1.addRoute(
 	{
 		async get() {
 			const { ids } = this.queryParams;
-			const { fields } = this.parseJsonQuery();
+			const { fields } = await this.parseJsonQuery();
 			if (!ids) {
 				return API.v1.failure("The 'ids' param is required");
 			}
@@ -320,8 +316,8 @@ API.v1.addRoute(
 	},
 	{
 		async get() {
-			const isDepartmentCreationAvailable = await LivechatEnterprise.isDepartmentCreationAvailable();
-			return API.v1.success({ isDepartmentCreationAvailable });
+			const available = await isDepartmentCreationAvailable();
+			return API.v1.success({ isDepartmentCreationAvailable: available });
 		},
 	},
 );

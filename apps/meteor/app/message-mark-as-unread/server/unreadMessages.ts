@@ -1,12 +1,12 @@
-import { Meteor } from 'meteor/meteor';
-import { Messages } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IMessage, IRoom } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Messages, Subscriptions } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import logger from './logger';
-import { Subscriptions } from '../../models/server';
+import { notifyOnSubscriptionChangedByRoomIdAndUserId } from '../../lib/server/lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		unreadMessages(firstUnreadMessage?: IMessage, room?: IRoom['_id']): void;
@@ -37,7 +37,12 @@ Meteor.methods<ServerMethods>({
 				});
 			}
 
-			return Subscriptions.setAsUnreadByRoomIdAndUserId(lastMessage.rid, userId, lastMessage.ts);
+			const setAsUnreadResponse = await Subscriptions.setAsUnreadByRoomIdAndUserId(lastMessage.rid, userId, lastMessage.ts);
+			if (setAsUnreadResponse.modifiedCount) {
+				void notifyOnSubscriptionChangedByRoomIdAndUserId(lastMessage.rid, userId);
+			}
+
+			return;
 		}
 
 		if (typeof firstUnreadMessage?._id !== 'string') {
@@ -61,11 +66,22 @@ Meteor.methods<ServerMethods>({
 				action: 'Unread_messages',
 			});
 		}
-		const lastSeen = Subscriptions.findOneByRoomIdAndUserId(originalMessage.rid, userId).ls;
+		const lastSeen = (await Subscriptions.findOneByRoomIdAndUserId(originalMessage.rid, userId))?.ls;
+		if (!lastSeen) {
+			throw new Meteor.Error('error-subscription-not-found', 'Subscription not found', {
+				method: 'unreadMessages',
+				action: 'Unread_messages',
+			});
+		}
+
 		if (firstUnreadMessage.ts >= lastSeen) {
 			return logger.debug('Provided message is already marked as unread');
 		}
-		logger.debug(`Updating unread  message of ${originalMessage.ts} as the first unread`);
-		return Subscriptions.setAsUnreadByRoomIdAndUserId(originalMessage.rid, userId, originalMessage.ts);
+
+		logger.debug(`Updating unread message of ${originalMessage.ts} as the first unread`);
+		const setAsUnreadResponse = await Subscriptions.setAsUnreadByRoomIdAndUserId(originalMessage.rid, userId, originalMessage.ts);
+		if (setAsUnreadResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedByRoomIdAndUserId(originalMessage.rid, userId);
+		}
 	},
 });

@@ -1,17 +1,17 @@
 import type { IRole } from '@rocket.chat/core-typings';
 import { Box, ButtonGroup, Button, Margins } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import { useSetModal, useToastMessageDispatch, useRoute, useEndpoint, useTranslation } from '@rocket.chat/ui-contexts';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
+import { useSetModal, useToastMessageDispatch, useRoute, useEndpoint } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React from 'react';
 import { FormProvider, useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 
-import GenericModal from '../../../components/GenericModal';
-import VerticalBar from '../../../components/VerticalBar';
 import RoleForm from './RoleForm';
+import { ContextualbarFooter, ContextualbarScrollableContent } from '../../../components/Contextualbar';
+import GenericModal from '../../../components/GenericModal';
 
 const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: boolean }): ReactElement => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const dispatchToastMessage = useToastMessageDispatch();
 	const setModal = useSetModal();
 	const usersInRoleRouter = useRoute('admin-permissions');
@@ -31,7 +31,7 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 		},
 	});
 
-	const handleManageUsers = useMutableCallback(() => {
+	const handleManageUsers = useEffectEvent(() => {
 		if (role?._id) {
 			usersInRoleRouter.push({
 				context: 'users-in-role',
@@ -40,7 +40,7 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 		}
 	});
 
-	const handleSave = useMutableCallback(async (data) => {
+	const handleSave = useEffectEvent(async (data) => {
 		try {
 			if (data.roleId) {
 				await updateRole(data);
@@ -56,7 +56,7 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 		}
 	});
 
-	const handleDelete = useMutableCallback(async () => {
+	const handleDelete = useEffectEvent(async () => {
 		if (!role?._id) {
 			return;
 		}
@@ -74,7 +74,7 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 			}
 		};
 
-		const deleteRoleMessage = isEnterprise ? t('Delete_Role_Warning') : t('Delete_Role_Warning_Community_Edition');
+		const deleteRoleMessage = isEnterprise ? t('Delete_Role_Warning') : t('Delete_Role_Warning_Not_Enterprise');
 
 		setModal(
 			<GenericModal
@@ -91,16 +91,16 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 
 	return (
 		<>
-			<VerticalBar.ScrollableContent>
+			<ContextualbarScrollableContent>
 				<Box w='full' alignSelf='center' mb='neg-x8'>
-					<Margins block='x8'>
+					<Margins block={8}>
 						<FormProvider {...methods}>
 							<RoleForm editing={Boolean(role?._id)} isProtected={role?.protected} isDisabled={!isEnterprise} />
 						</FormProvider>
 					</Margins>
 				</Box>
-			</VerticalBar.ScrollableContent>
-			<VerticalBar.Footer>
+			</ContextualbarScrollableContent>
+			<ContextualbarFooter>
 				<ButtonGroup vertical stretch>
 					<Button primary disabled={!methods.formState.isDirty || !isEnterprise} onClick={methods.handleSubmit(handleSave)}>
 						{t('Save')}
@@ -112,7 +112,7 @@ const EditRolePage = ({ role, isEnterprise }: { role?: IRole; isEnterprise: bool
 					)}
 					{role?._id && <Button onClick={handleManageUsers}>{t('Users_in_role')}</Button>}
 				</ButtonGroup>
-			</VerticalBar.Footer>
+			</ContextualbarFooter>
 		</>
 	);
 };

@@ -1,11 +1,11 @@
 import type { ISubscription } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions } from '@rocket.chat/models';
 import { Meteor } from 'meteor/meteor';
 
-import { Subscriptions } from '../../../app/models/server';
-import { subscriptionFields } from '../../modules/watchers/publishFields';
+import { subscriptionFields } from '../../../lib/publishFields';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'subscriptions/get'(updatedAt?: Date): ISubscription[] | { update: ISubscription[]; remove: { _id: string; _deletedAt: Date }[] };
@@ -13,33 +13,33 @@ declare module '@rocket.chat/ui-contexts' {
 }
 
 Meteor.methods<ServerMethods>({
-	'subscriptions/get'(updatedAt) {
+	async 'subscriptions/get'(updatedAt) {
 		const uid = Meteor.userId();
 		if (!uid) {
 			return [];
 		}
 
-		const options = { fields: subscriptionFields };
+		const options = { projection: subscriptionFields };
 
-		const records: ISubscription[] = Subscriptions.findByUserId(uid, options).fetch();
+		const records: ISubscription[] = await Subscriptions.findByUserId(uid, options).toArray();
 
 		if (updatedAt instanceof Date) {
 			return {
 				update: records.filter((record) => {
 					return record._updatedAt > updatedAt;
 				}),
-				remove: Subscriptions.trashFindDeletedAfter(
+				remove: await Subscriptions.trashFindDeletedAfter(
 					updatedAt,
 					{
 						'u._id': uid,
 					},
 					{
-						fields: {
+						projection: {
 							_id: 1,
 							_deletedAt: 1,
 						},
 					},
-				).fetch(),
+				).toArray(),
 			};
 		}
 
