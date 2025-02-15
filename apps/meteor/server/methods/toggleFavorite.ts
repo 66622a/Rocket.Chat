@@ -1,33 +1,41 @@
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
 import type { IRoom } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions } from '@rocket.chat/models';
+import { Match, check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { Subscriptions } from '../../app/models/server';
+import { notifyOnSubscriptionChangedByRoomIdAndUserId } from '../../app/lib/server/lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
-		toggleFavorite(rid: IRoom['_id'], f?: boolean): number;
+		toggleFavorite(rid: IRoom['_id'], f?: boolean): Promise<number>;
 	}
 }
 
 Meteor.methods<ServerMethods>({
-	toggleFavorite(rid, f) {
+	async toggleFavorite(rid, f) {
 		check(rid, String);
-
 		check(f, Match.Optional(Boolean));
-		if (!Meteor.userId()) {
+		const userId = Meteor.userId();
+
+		if (!userId) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 				method: 'toggleFavorite',
 			});
 		}
 
-		const userSubscription = Subscriptions.findOneByRoomIdAndUserId(rid, Meteor.userId());
+		const userSubscription = await Subscriptions.findOneByRoomIdAndUserId(rid, userId);
 		if (!userSubscription) {
 			throw new Meteor.Error('error-invalid-subscription', 'You must be part of a room to favorite it', { method: 'toggleFavorite' });
 		}
 
-		return Subscriptions.setFavoriteByRoomIdAndUserId(rid, Meteor.userId(), f);
+		const { modifiedCount } = await Subscriptions.setFavoriteByRoomIdAndUserId(rid, userId, f);
+
+		if (modifiedCount) {
+			void notifyOnSubscriptionChangedByRoomIdAndUserId(rid, userId);
+		}
+
+		return modifiedCount;
 	},
 });

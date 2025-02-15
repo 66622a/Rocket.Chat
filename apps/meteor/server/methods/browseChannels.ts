@@ -1,20 +1,19 @@
-import { Meteor } from 'meteor/meteor';
-import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import mem from 'mem';
-import { escapeRegExp } from '@rocket.chat/string-helpers';
-import { Rooms, Users } from '@rocket.chat/models';
 import { Team } from '@rocket.chat/core-services';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import type { IRoom, ISubscription, IUser } from '@rocket.chat/core-typings';
+import type { IRoom, IUser } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms, Users, Subscriptions } from '@rocket.chat/models';
+import { escapeRegExp } from '@rocket.chat/string-helpers';
+import mem from 'mem';
+import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../app/authorization/server/functions/hasPermission';
-import { Subscriptions } from '../../app/models/server';
-import { settings } from '../../app/settings/server';
+import { federationSearchUsers } from '../../app/federation/server/handler';
 import { getFederationDomain } from '../../app/federation/server/lib/getFederationDomain';
 import { isFederationEnabled } from '../../app/federation/server/lib/isFederationEnabled';
-import { federationSearchUsers } from '../../app/federation/server/handler';
-import { trim } from '../../lib/utils/stringUtils';
+import { settings } from '../../app/settings/server';
 import { isTruthy } from '../../lib/isTruthy';
+import { trim } from '../../lib/utils/stringUtils';
 
 const sortChannels = (field: string, direction: 'asc' | 'desc'): Record<string, 1 | -1> => {
 	switch (field) {
@@ -117,7 +116,7 @@ const getChannelsAndGroups = async (
 	};
 };
 
-const getChannelsCountForTeam = mem((teamId) => Rooms.findByTeamId(teamId, { projection: { _id: 1 } }).count(), {
+const getChannelsCountForTeam = mem((teamId) => Rooms.countByTeamId(teamId), {
 	maxAge: 2000,
 });
 
@@ -134,7 +133,7 @@ const getTeams = async (
 		return;
 	}
 
-	const userSubs: ISubscription[] = Subscriptions.cachedFindByUserId(user._id).fetch();
+	const userSubs = await Subscriptions.findByUserId(user._id).toArray();
 	const ids = userSubs.map((sub) => sub.rid);
 	const { cursor, totalCount } = Rooms.findPaginatedContainingNameOrFNameInIdsAsTeamMain(
 		searchTerm ? new RegExp(searchTerm, 'i') : null,
@@ -164,9 +163,7 @@ const getTeams = async (
 		},
 	);
 	const results = await Promise.all(
-		(
-			await cursor.toArray()
-		).map(async (room) => ({
+		(await cursor.toArray()).map(async (room) => ({
 			...room,
 			roomsCount: await getChannelsCountForTeam(room.teamId),
 		})),
@@ -309,7 +306,7 @@ const getUsers = async (
 	};
 };
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		browseChannels: (params: {
@@ -364,7 +361,7 @@ Meteor.methods<ServerMethods>({
 
 		const canViewAnonymous = !!settings.get('Accounts_AllowAnonymousRead');
 
-		const user = Meteor.user() as IUser | null;
+		const user = (await Meteor.userAsync()) as IUser | null;
 
 		if (!user) {
 			return;
