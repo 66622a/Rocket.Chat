@@ -1,9 +1,12 @@
-/* eslint-disable @typescript-eslint/explicit-function-return-type */
-import { Messages, Rooms } from '../../../models/server';
+import type { IMessage, MessageTypesValues } from '@rocket.chat/core-typings';
+import { Messages, Rooms } from '@rocket.chat/models';
+import type { FindOptions } from 'mongodb';
+
+import { settings } from '../../../settings/server/cached';
 import { normalizeMessagesForUser } from '../../../utils/server/lib/normalizeMessagesForUser';
 import { getHiddenSystemMessages } from '../lib/getHiddenSystemMessages';
 
-export function loadMessageHistory({
+export async function loadMessageHistory({
 	userId,
 	rid,
 	end,
@@ -12,7 +15,8 @@ export function loadMessageHistory({
 	showThreadMessages = true,
 	offset = 0,
 }: {
-	userId: string;
+	// userId is undefined if user is reading anonymously
+	userId?: string;
 	rid: string;
 	end: Date | undefined;
 	limit?: number;
@@ -20,33 +24,46 @@ export function loadMessageHistory({
 	showThreadMessages?: boolean;
 	offset?: number;
 }) {
-	const room = Rooms.findOneById(rid, { fields: { sysMes: 1 } });
+	const room = await Rooms.findOneById(rid, { projection: { sysMes: 1 } });
 
-	const hiddenMessageTypes = getHiddenSystemMessages(room);
+	if (!room) {
+		throw new Error('error-invalid-room');
+	}
 
-	const options = {
+	const hiddenSystemMessages = settings.get<MessageTypesValues[]>('Hide_System_Messages');
+
+	const hiddenMessageTypes = getHiddenSystemMessages(room, hiddenSystemMessages);
+
+	const options: FindOptions<IMessage> = {
 		sort: {
 			ts: -1,
 		},
 		limit,
 		skip: offset,
-		fields: {},
 	};
 
 	const records = end
-		? Messages.findVisibleByRoomIdBeforeTimestampNotContainingTypes(rid, end, hiddenMessageTypes, options, showThreadMessages).fetch()
-		: Messages.findVisibleByRoomIdNotContainingTypes(rid, hiddenMessageTypes, options, showThreadMessages).fetch();
-	const messages = normalizeMessagesForUser(records, userId);
+		? await Messages.findVisibleByRoomIdBeforeTimestampNotContainingTypes(
+				rid,
+				end,
+				hiddenMessageTypes,
+				options,
+				showThreadMessages,
+			).toArray()
+		: await Messages.findVisibleByRoomIdNotContainingTypes(rid, hiddenMessageTypes, options, showThreadMessages).toArray();
+	const messages = await normalizeMessagesForUser(records, userId);
 	let unreadNotLoaded = 0;
 	let firstUnread;
 
 	if (ls) {
 		const firstMessage = messages[messages.length - 1];
 
-		if (firstMessage && new Date(firstMessage.ts) > new Date(ls)) {
+		const lastSeen = new Date(ls);
+
+		if (firstMessage && new Date(firstMessage.ts) > lastSeen) {
 			const unreadMessages = Messages.findVisibleByRoomIdBetweenTimestampsNotContainingTypes(
 				rid,
-				ls,
+				lastSeen,
 				firstMessage.ts,
 				hiddenMessageTypes,
 				{
@@ -58,17 +75,16 @@ export function loadMessageHistory({
 				showThreadMessages,
 			);
 
-			const totalCursor = Messages.findVisibleByRoomIdBetweenTimestampsNotContainingTypes(
+			const totalCursor = await Messages.countVisibleByRoomIdBetweenTimestampsNotContainingTypes(
 				rid,
-				ls,
+				lastSeen,
 				firstMessage.ts,
 				hiddenMessageTypes,
-				{},
 				showThreadMessages,
 			);
 
-			firstUnread = unreadMessages.fetch()[0];
-			unreadNotLoaded = totalCursor.count();
+			firstUnread = (await unreadMessages.toArray())[0];
+			unreadNotLoaded = totalCursor;
 		}
 	}
 

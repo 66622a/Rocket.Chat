@@ -1,7 +1,7 @@
 import type { AtLeast, ValueOf } from '@rocket.chat/core-typings';
-import { LivechatVisitors } from '@rocket.chat/models';
+import { isMessageFromVisitor } from '@rocket.chat/core-typings';
+import { LivechatVisitors, LivechatRooms } from '@rocket.chat/models';
 
-import { LivechatRooms } from '../../../../app/models/server';
 import { RoomSettingsEnum, RoomMemberActions } from '../../../../definition/IRoomTypeConfig';
 import type { IRoomTypeServerDirectives } from '../../../../definition/IRoomTypeConfig';
 import { getLivechatRoomType } from '../../../../lib/rooms/roomTypes/livechat';
@@ -19,27 +19,30 @@ roomCoordinator.add(LivechatRoomType, {
 		}
 	},
 
-	allowMemberAction(_room, action) {
+	async allowMemberAction(_room, action) {
 		return ([RoomMemberActions.INVITE, RoomMemberActions.JOIN] as Array<ValueOf<typeof RoomMemberActions>>).includes(action);
 	},
 
-	roomName(room, _userId?) {
+	async roomName(room, _userId?) {
 		return room.name || room.fname || (room as any).label;
 	},
 
-	canAccessUploadedFile({ rc_token: token, rc_rid: rid }) {
-		return token && rid && LivechatRooms.findOneOpenByRoomIdAndVisitorToken(rid, token);
+	async canAccessUploadedFile({ rc_token: token, rc_rid: rid }) {
+		return token && rid && !!(await LivechatRooms.findOneByIdAndVisitorToken(rid, token));
 	},
 
-	getNotificationDetails(room, _sender, notificationMessage, userId) {
-		const title = `[Omnichannel] ${this.roomName(room, userId)}`;
+	async getNotificationDetails(room, _sender, notificationMessage, userId) {
+		const roomName = await this.roomName(room, userId);
+		const title = `[Omnichannel] ${roomName}`;
 		const text = notificationMessage;
 
-		return { title, text };
+		return { title, text, name: roomName };
 	},
 
-	getMsgSender(senderId) {
-		return LivechatVisitors.findOneById(senderId);
+	async getMsgSender(message) {
+		if (isMessageFromVisitor(message)) {
+			return LivechatVisitors.findOneEnabledById(message.u._id);
+		}
 	},
 
 	getReadReceiptsExtraData(message) {

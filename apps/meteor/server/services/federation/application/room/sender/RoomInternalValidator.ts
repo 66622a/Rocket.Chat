@@ -8,7 +8,7 @@ import type { RocketChatFileAdapter } from '../../../infrastructure/rocket-chat/
 import type { RocketChatRoomAdapter } from '../../../infrastructure/rocket-chat/adapters/Room';
 import type { RocketChatSettingsAdapter } from '../../../infrastructure/rocket-chat/adapters/Settings';
 import type { RocketChatUserAdapter } from '../../../infrastructure/rocket-chat/adapters/User';
-import { AbstractFederationApplicationService } from '../../AbstractFederationService';
+import { AbstractFederationApplicationService } from '../../AbstractFederationApplicationService';
 
 export class FederationRoomInternalValidator extends AbstractFederationApplicationService {
 	constructor(
@@ -46,7 +46,7 @@ export class FederationRoomInternalValidator extends AbstractFederationApplicati
 			return;
 		}
 		if (this.isAddingANewExternalUser(internalUser) && !isDirectMessageRoom(internalRoom)) {
-			throw new Error('error-this-is-an-ee-feature');
+			throw new Error('error-this-is-a-premium-feature');
 		}
 
 		const inviter = await this.internalUserAdapter.getFederatedUserByInternalId(internalInviter._id);
@@ -72,7 +72,7 @@ export class FederationRoomInternalValidator extends AbstractFederationApplicati
 		const addingAnExternalUser = invitee?.isRemote();
 		const addingExternalUserToNonDirectMessageRoom = addingAnExternalUser && !isDirectMessageRoom(internalRoom);
 		if (addingExternalUserToNonDirectMessageRoom) {
-			throw new Error('error-this-is-an-ee-feature');
+			throw new Error('error-this-is-a-premium-feature');
 		}
 	}
 
@@ -89,7 +89,7 @@ export class FederationRoomInternalValidator extends AbstractFederationApplicati
 					!FederatedUser.isOriginalFromTheProxyServer(this.bridge.extractHomeserverOrigin(username), this.internalHomeServerDomain),
 			) || internalUsers.filter((user) => !this.isAddingANewExternalUser(user)).some((user) => isUserFederated(user as IUser));
 		if (atLeastOneExternalUser) {
-			throw new Error('error-this-is-an-ee-feature');
+			throw new Error('error-this-is-a-premium-feature');
 		}
 	}
 
