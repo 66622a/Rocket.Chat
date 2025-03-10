@@ -2,11 +2,11 @@ import type { IRoom, IUser, ValueOf } from '@rocket.chat/core-typings';
 import { isRoomFederated, isDirectMessageRoom } from '@rocket.chat/core-typings';
 import { Subscriptions } from '@rocket.chat/models';
 
+import { RoomMemberActions, RoomSettingsEnum } from '../../../definition/IRoomTypeConfig';
 import {
 	escapeExternalFederationEventId,
 	unescapeExternalFederationEventId,
 } from './infrastructure/rocket-chat/adapters/federation-id-escape-helper';
-import { RoomMemberActions, RoomSettingsEnum } from '../../../definition/IRoomTypeConfig';
 
 const allowedActionsInFederatedRooms: ValueOf<typeof RoomMemberActions>[] = [
 	RoomMemberActions.REMOVE_USER,
@@ -17,12 +17,14 @@ const allowedActionsInFederatedRooms: ValueOf<typeof RoomMemberActions>[] = [
 	RoomMemberActions.LEAVE,
 ];
 
-const allowedActionsForModerators = allowedActionsInFederatedRooms.filter((action) => action !== RoomMemberActions.SET_AS_OWNER);
+const allowedActionsForModerators: ValueOf<typeof RoomMemberActions>[] = allowedActionsInFederatedRooms.filter(
+	(action) => action !== RoomMemberActions.SET_AS_OWNER,
+);
 
 const allowedRoomSettingsChangesInFederatedRooms: ValueOf<typeof RoomSettingsEnum>[] = [RoomSettingsEnum.NAME, RoomSettingsEnum.TOPIC];
 
 export class Federation {
-	public static actionAllowed(room: IRoom, action: ValueOf<typeof RoomMemberActions>, userId?: IUser['_id']): boolean {
+	public static async actionAllowed(room: IRoom, action: ValueOf<typeof RoomMemberActions>, userId?: IUser['_id']): Promise<boolean> {
 		if (!isRoomFederated(room)) {
 			return false;
 		}
@@ -33,7 +35,7 @@ export class Federation {
 			return true;
 		}
 
-		const userSubscription = Promise.await(Subscriptions.findOneByRoomIdAndUserId(room._id, userId));
+		const userSubscription = await Subscriptions.findOneByRoomIdAndUserId(room._id, userId);
 		if (!userSubscription) {
 			return true;
 		}

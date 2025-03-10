@@ -1,5 +1,6 @@
-import { Random } from '@rocket.chat/random';
 import { OmnichannelSourceType } from '@rocket.chat/core-typings';
+import { LivechatVisitors, LivechatRooms, Messages } from '@rocket.chat/models';
+import { Random } from '@rocket.chat/random';
 import {
 	isPOSTLivechatMessageParams,
 	isGETLivechatMessageIdParams,
@@ -8,15 +9,17 @@ import {
 	isGETLivechatMessagesHistoryRidParams,
 	isGETLivechatMessagesParams,
 } from '@rocket.chat/rest-typings';
-import { LivechatVisitors } from '@rocket.chat/models';
 
-import { Messages, LivechatRooms } from '../../../../models/server';
+import { callbacks } from '../../../../../lib/callbacks';
 import { API } from '../../../../api/server';
-import { loadMessageHistory } from '../../../../lib/server';
-import { findGuest, findRoom, normalizeHttpHeaderData } from '../lib/livechat';
-import { Livechat } from '../../lib/Livechat';
-import { normalizeMessageFileUpload } from '../../../../utils/server/functions/normalizeMessageFileUpload';
+import { getPaginationItems } from '../../../../api/server/helpers/getPaginationItems';
+import { isWidget } from '../../../../api/server/helpers/isWidget';
+import { loadMessageHistory } from '../../../../lib/server/functions/loadMessageHistory';
 import { settings } from '../../../../settings/server';
+import { normalizeMessageFileUpload } from '../../../../utils/server/functions/normalizeMessageFileUpload';
+import { Livechat as LivechatTyped } from '../../lib/LivechatTyped';
+import { updateMessage, deleteMessage, sendMessage } from '../../lib/messages';
+import { findGuest, findRoom, normalizeHttpHeaderData } from '../lib/livechat';
 
 API.v1.addRoute(
 	'livechat/message',
@@ -30,7 +33,7 @@ API.v1.addRoute(
 				throw new Error('invalid-token');
 			}
 
-			const room = findRoom(token, rid);
+			const room = await findRoom(token, rid);
 			if (!room) {
 				throw new Error('invalid-room');
 			}
@@ -48,7 +51,7 @@ API.v1.addRoute(
 
 			const _id = this.bodyParams._id || Random.id();
 
-			const sendMessage = {
+			const messageToSend = {
 				guest,
 				message: {
 					_id,
@@ -59,14 +62,17 @@ API.v1.addRoute(
 				agent,
 				roomInfo: {
 					source: {
-						type: this.isWidget() ? OmnichannelSourceType.WIDGET : OmnichannelSourceType.API,
+						type: isWidget(this.request.headers) ? OmnichannelSourceType.WIDGET : OmnichannelSourceType.API,
 					},
 				},
 			};
 
-			const result = await Livechat.sendMessage(sendMessage);
+			const result = await sendMessage(messageToSend);
 			if (result) {
-				const message = Messages.findOneById(_id);
+				const message = await Messages.findOneById(_id);
+				if (!message) {
+					return API.v1.failure();
+				}
 				return API.v1.success({ message });
 			}
 
@@ -88,18 +94,22 @@ API.v1.addRoute(
 				throw new Error('invalid-token');
 			}
 
-			const room = findRoom(token, rid);
+			const room = await findRoom(token, rid);
 			if (!room) {
 				throw new Error('invalid-room');
 			}
 
-			let message = Messages.findOneById(_id);
+			let message = await Messages.findOneByRoomIdAndMessageId(rid, _id);
 			if (!message) {
 				throw new Error('invalid-message');
 			}
 
 			if (message.file) {
-				message = await normalizeMessageFileUpload(message);
+				message = { ...(await normalizeMessageFileUpload(message)), ...{ _updatedAt: message._updatedAt } };
+			}
+
+			if (!message) {
+				throw new Error('invalid-message');
 			}
 
 			return API.v1.success({ message });
@@ -114,30 +124,39 @@ API.v1.addRoute(
 				throw new Error('invalid-token');
 			}
 
-			const room = findRoom(token, rid);
+			const room = await findRoom(token, rid);
 			if (!room) {
 				throw new Error('invalid-room');
 			}
 
-			const msg = Messages.findOneById(_id);
+			// TODO: projection
+			const msg = await Messages.findOneById(_id);
 			if (!msg) {
 				throw new Error('invalid-message');
 			}
 
-			const result = await Livechat.updateMessage({
+			const result = await updateMessage({
 				guest,
-				message: { _id: msg._id, msg: this.bodyParams.msg },
+				message: { _id: msg._id, msg: this.bodyParams.msg, rid: msg.rid },
 			});
-			if (result) {
-				let message = Messages.findOneById(_id);
-				if (message.file) {
-					message = await normalizeMessageFileUpload(message);
-				}
-
-				return API.v1.success({ message });
+			if (!result) {
+				return API.v1.failure();
 			}
 
-			return API.v1.failure();
+			let message = await Messages.findOneById(_id);
+			if (!message) {
+				return API.v1.failure();
+			}
+
+			if (message?.file) {
+				message = { ...(await normalizeMessageFileUpload(message)), ...{ _updatedAt: message._updatedAt } };
+			}
+
+			if (!message) {
+				throw new Error('invalid-message');
+			}
+
+			return API.v1.success({ message });
 		},
 		async delete() {
 			const { token, rid } = this.bodyParams;
@@ -148,17 +167,17 @@ API.v1.addRoute(
 				throw new Error('invalid-token');
 			}
 
-			const room = findRoom(token, rid);
+			const room = await findRoom(token, rid);
 			if (!room) {
 				throw new Error('invalid-room');
 			}
 
-			const message = Messages.findOneById(_id);
+			const message = await Messages.findOneById(_id);
 			if (!message) {
 				throw new Error('invalid-message');
 			}
 
-			const result = await Livechat.deleteMessage({ guest, message });
+			const result = await deleteMessage({ guest, message });
 			if (result) {
 				return API.v1.success({
 					message: {
@@ -178,7 +197,7 @@ API.v1.addRoute(
 	{ validateParams: isGETLivechatMessagesHistoryRidParams },
 	{
 		async get() {
-			const { offset } = this.getPaginationItems();
+			const { offset } = await getPaginationItems(this.queryParams);
 			const { token } = this.queryParams;
 			const { rid } = this.urlParams;
 
@@ -191,7 +210,7 @@ API.v1.addRoute(
 				throw new Error('invalid-token');
 			}
 
-			const room = findRoom(token, rid);
+			const room = await findRoom(token, rid);
 			if (!room) {
 				throw new Error('invalid-room');
 			}
@@ -211,16 +230,17 @@ API.v1.addRoute(
 				limit = parseInt(`${this.queryParams.limit}`, 10);
 			}
 
-			const messages = await Promise.all(
-				loadMessageHistory({
-					userId: guest._id,
-					rid,
-					end,
-					limit,
-					ls,
-					offset,
-				}).messages.map((message) => normalizeMessageFileUpload(message)),
-			);
+			const history = await loadMessageHistory({
+				userId: guest._id,
+				rid,
+				end,
+				limit,
+				ls,
+				offset,
+			});
+
+			const messages = await Promise.all(history.messages.map((message) => normalizeMessageFileUpload(message)));
+
 			return API.v1.success({ messages });
 		},
 	},
@@ -233,10 +253,11 @@ API.v1.addRoute(
 		async post() {
 			const visitorToken = this.bodyParams.visitor.token;
 
-			let visitor = await LivechatVisitors.getVisitorByToken(visitorToken, {});
+			const visitor = await LivechatVisitors.getVisitorByToken(visitorToken, {});
 			let rid: string;
 			if (visitor) {
-				const rooms = LivechatRooms.findOpenByVisitorToken(visitorToken).fetch();
+				const extraQuery = await callbacks.run('livechat.applyRoomRestrictions', {});
+				const rooms = await LivechatRooms.findOpenByVisitorToken(visitorToken, {}, extraQuery).toArray();
 				if (rooms && rooms.length > 0) {
 					rid = rooms[0]._id;
 				} else {
@@ -248,15 +269,21 @@ API.v1.addRoute(
 				const guest: typeof this.bodyParams.visitor & { connectionData?: unknown } = this.bodyParams.visitor;
 				guest.connectionData = normalizeHttpHeaderData(this.request.headers);
 
-				// @ts-expect-error -- Typings on registerGuest are wrong
-				const visitorId = await Livechat.registerGuest(guest);
-				visitor = await LivechatVisitors.findOneById(visitorId);
+				const visitor = await LivechatTyped.registerGuest(guest);
+				if (!visitor) {
+					throw new Error('error-livechat-visitor-registration');
+				}
+			}
+
+			const guest = visitor;
+			if (!guest) {
+				throw new Error('error-invalid-token');
 			}
 
 			const sentMessages = await Promise.all(
-				this.bodyParams.messages.map(async (message) => {
-					const sendMessage = {
-						guest: visitor,
+				this.bodyParams.messages.map(async (message: { msg: string }): Promise<{ username: string; msg: string; ts: number }> => {
+					const messageToSend = {
+						guest,
 						message: {
 							_id: Random.id(),
 							rid,
@@ -265,12 +292,12 @@ API.v1.addRoute(
 						},
 						roomInfo: {
 							source: {
-								type: this.isWidget() ? OmnichannelSourceType.WIDGET : OmnichannelSourceType.API,
+								type: isWidget(this.request.headers) ? OmnichannelSourceType.WIDGET : OmnichannelSourceType.API,
 							},
 						},
 					};
-					// @ts-expect-error -- Typings on sendMessage are wrong
-					const sentMessage = await Livechat.sendMessage(sendMessage);
+
+					const sentMessage = await sendMessage(messageToSend);
 					return {
 						username: sentMessage.u.username,
 						msg: sentMessage.msg,

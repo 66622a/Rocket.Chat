@@ -1,10 +1,11 @@
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions } from '@rocket.chat/models';
 import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
-import { Subscriptions } from '../../app/models/server';
+import { notifyOnSubscriptionChangedById } from '../../app/lib/server/lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		ignoreUser(params: { rid: string; userId: string; ignore?: boolean }): boolean;
@@ -12,7 +13,7 @@ declare module '@rocket.chat/ui-contexts' {
 }
 
 Meteor.methods<ServerMethods>({
-	ignoreUser({ rid, userId: ignoredUser, ignore = true }) {
+	async ignoreUser({ rid, userId: ignoredUser, ignore = true }) {
 		check(ignoredUser, String);
 		check(rid, String);
 		check(ignore, Boolean);
@@ -24,7 +25,10 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const subscription = Subscriptions.findOneByRoomIdAndUserId(rid, userId);
+		const [subscription, subscriptionIgnoredUser] = await Promise.all([
+			Subscriptions.findOneByRoomIdAndUserId(rid, userId),
+			Subscriptions.findOneByRoomIdAndUserId(rid, ignoredUser),
+		]);
 
 		if (!subscription) {
 			throw new Meteor.Error('error-invalid-subscription', 'Invalid subscription', {
@@ -32,14 +36,18 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const subscriptionIgnoredUser = Subscriptions.findOneByRoomIdAndUserId(rid, ignoredUser);
-
 		if (!subscriptionIgnoredUser) {
 			throw new Meteor.Error('error-invalid-subscription', 'Invalid subscription', {
 				method: 'ignoreUser',
 			});
 		}
 
-		return !!Subscriptions.ignoreUser({ _id: subscription._id, ignoredUser, ignore });
+		const result = await Subscriptions.ignoreUser({ _id: subscription._id, ignoredUser, ignore });
+
+		if (result.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
+
+		return !!result;
 	},
 });

@@ -1,4 +1,4 @@
-import { emoji } from '../../../app/emoji/lib/rocketchat';
+import { emoji } from '../../../app/emoji/client/lib';
 
 const emojiList = emoji.list as Record<string, { emojiPackage: string }>;
 const emojiPackages = emoji.packages as Record<string, { render(emojiName: string): string }>;
@@ -21,7 +21,7 @@ type EmojiParserResult = {
 	'image'?: string;
 };
 
-export const createGetEmojiClassNameAndDataTitle =
+const createGetEmojiClassNameAndDataTitle =
 	(parser: (emojiName: string) => string | undefined) =>
 	(emojiName: string): EmojiParserResult => {
 		const html = parser(emojiName);
@@ -43,7 +43,7 @@ export const createGetEmojiClassNameAndDataTitle =
 				? emojiElement.style.backgroundImage
 				: (Object.fromEntries((emojiElement.getAttribute('style') || '')?.split(';').map((s) => s.split(':'))) as Record<string, string>)[
 						'background-image'
-				  ];
+					];
 
 		return {
 			'className': emojiElement.getAttribute('class') || '',

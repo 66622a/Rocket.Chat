@@ -1,12 +1,13 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IRoom } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
 import { canAccessRoomIdAsync } from '../../../authorization/server/functions/canAccessRoom';
-import { Rooms } from '../../../models/server';
+import { notifyOnRoomChangedById } from '../../../lib/server/lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'e2e.setRoomKeyID'(rid: IRoom['_id'], keyID: string): void;
@@ -31,7 +32,11 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error('error-invalid-room', 'Invalid room', { method: 'e2e.setRoomKeyID' });
 		}
 
-		const room = Rooms.findOneById(rid, { fields: { e2eKeyId: 1 } });
+		const room = await Rooms.findOneById<Pick<IRoom, '_id' | 'e2eKeyId'>>(rid, { projection: { e2eKeyId: 1 } });
+
+		if (!room) {
+			throw new Meteor.Error('error-invalid-room', 'Invalid room', { method: 'e2e.setRoomKeyID' });
+		}
 
 		if (room.e2eKeyId) {
 			throw new Meteor.Error('error-room-e2e-key-already-exists', 'E2E Key ID already exists', {
@@ -39,6 +44,8 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		return Rooms.setE2eKeyId(room._id, keyID);
+		await Rooms.setE2eKeyId(room._id, keyID);
+
+		void notifyOnRoomChangedById(room._id);
 	},
 });

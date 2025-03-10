@@ -1,36 +1,57 @@
-import type { ReactElement } from 'react';
-import React, { useEffect, Suspense } from 'react';
-import { useSyncExternalStore } from 'use-sync-external-store/shim';
+import { useEffect, Suspense, useSyncExternalStore } from 'react';
 
-import { appLayout } from '../../lib/appLayout';
-import { blazePortals, useBlazePortals } from '../../lib/portals/blazePortals';
+import DocumentTitleWrapper from './DocumentTitleWrapper';
 import PageLoading from './PageLoading';
 import { useEscapeKeyStroke } from './hooks/useEscapeKeyStroke';
 import { useGoogleTagManager } from './hooks/useGoogleTagManager';
 import { useMessageLinkClicks } from './hooks/useMessageLinkClicks';
+import { useSettingsOnLoadSiteUrl } from './hooks/useSettingsOnLoadSiteUrl';
+import { useAnalytics } from '../../../app/analytics/client/loadScript';
+import { useDolphin } from '../../../app/dolphin/client/hooks/useDolphin';
+import { useDrupal } from '../../../app/drupal/client/hooks/useDrupal';
+import { useEmojiOne } from '../../../app/emoji-emojione/client/hooks/useEmojiOne';
+import { useGitHubEnterpriseAuth } from '../../../app/github-enterprise/client/hooks/useGitHubEnterpriseAuth';
+import { useGitLabAuth } from '../../../app/gitlab/client/hooks/useGitLabAuth';
+import { useLivechatEnterprise } from '../../../app/livechat-enterprise/hooks/useLivechatEnterprise';
+import { useNextcloud } from '../../../app/nextcloud/client/useNextcloud';
+import { useAnalyticsEventTracking } from '../../hooks/useAnalyticsEventTracking';
+import { useLoadRoomForAllowedAnonymousRead } from '../../hooks/useLoadRoomForAllowedAnonymousRead';
+import { useNotifyUser } from '../../hooks/useNotifyUser';
+import { appLayout } from '../../lib/appLayout';
+import { useRedirectToSetupWizard } from '../../startup/useRedirectToSetupWizard';
 
-const AppLayout = (): ReactElement => {
+const AppLayout = () => {
 	useEffect(() => {
 		document.body.classList.add('color-primary-font-color', 'rcx-content--main');
 
 		return () => {
-			document.body.classList.add('color-primary-font-color', 'rcx-content--main');
+			document.body.classList.remove('color-primary-font-color', 'rcx-content--main');
 		};
 	}, []);
 
 	useMessageLinkClicks();
 	useGoogleTagManager();
+	useAnalytics();
 	useEscapeKeyStroke();
+	useAnalyticsEventTracking();
+	useLoadRoomForAllowedAnonymousRead();
+	useNotifyUser();
+	useEmojiOne();
+	useRedirectToSetupWizard();
+	useSettingsOnLoadSiteUrl();
+	useLivechatEnterprise();
+	useNextcloud();
+	useGitLabAuth();
+	useGitHubEnterpriseAuth();
+	useDrupal();
+	useDolphin();
 
 	const layout = useSyncExternalStore(appLayout.subscribe, appLayout.getSnapshot);
 
-	const [portals] = useBlazePortals(blazePortals);
-
 	return (
-		<>
-			<Suspense fallback={<PageLoading />}>{layout}</Suspense>
-			{portals}
-		</>
+		<Suspense fallback={<PageLoading />}>
+			<DocumentTitleWrapper>{layout}</DocumentTitleWrapper>
+		</Suspense>
 	);
 };
 

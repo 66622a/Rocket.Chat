@@ -1,11 +1,11 @@
-import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
-import type { IMessage, IMessageDiscussion, IRoom } from '@rocket.chat/core-typings';
 import { api } from '@rocket.chat/core-services';
-import { Messages as MessagesRaw, Rooms } from '@rocket.chat/models';
+import type { IRoom } from '@rocket.chat/core-typings';
+import { Messages, Rooms, Subscriptions, ReadReceipts, Users } from '@rocket.chat/models';
 
 import { deleteRoom } from './deleteRoom';
+import { i18n } from '../../../../server/lib/i18n';
 import { FileUpload } from '../../../file-upload/server';
-import { Messages, Subscriptions } from '../../../models/server';
+import { notifyOnRoomChangedById, notifyOnSubscriptionChangedById } from '../lib/notifyListener';
 
 export async function cleanRoomHistory({
 	rid = '',
@@ -35,46 +35,70 @@ export async function cleanRoomHistory({
 
 	const ts = { [gt]: oldest, [lt]: latest };
 
-	const text = `_${TAPi18n.__('File_removed_by_prune')}_`;
+	const text = `_${i18n.t('File_removed_by_prune')}_`;
 
 	let fileCount = 0;
-	Messages.findFilesByRoomIdPinnedTimestampAndUsers(rid, excludePinned, ignoreDiscussion, ts, fromUsers, ignoreThreads, {
-		fields: { pinned: 1, files: 1 },
+
+	const cursor = Messages.findFilesByRoomIdPinnedTimestampAndUsers(rid, excludePinned, ignoreDiscussion, ts, fromUsers, ignoreThreads, {
+		projection: { pinned: 1, files: 1 },
 		limit,
-	}).forEach((document: IMessage) => {
+	});
+
+	for await (const document of cursor) {
 		const uploadsStore = FileUpload.getStore('Uploads');
 
-		document.files?.forEach((file) => uploadsStore.deleteById(file._id));
+		document.files && (await Promise.all(document.files.map((file) => uploadsStore.deleteById(file._id))));
+
 		fileCount++;
 		if (filesOnly) {
-			Messages.update({ _id: document._id }, { $unset: { file: 1 }, $set: { attachments: [{ color: '#FD745E', text }] } });
+			await Messages.updateOne({ _id: document._id }, { $unset: { file: 1 }, $set: { attachments: [{ color: '#FD745E', text }] } });
 		}
-	});
+	}
 
 	if (filesOnly) {
 		return fileCount;
 	}
 
 	if (!ignoreDiscussion) {
-		Messages.findDiscussionByRoomIdPinnedTimestampAndUsers(rid, excludePinned, ts, fromUsers, {
-			fields: { drid: 1 },
+		const discussionsCursor = Messages.findDiscussionByRoomIdPinnedTimestampAndUsers(rid, excludePinned, ts, fromUsers, {
+			projection: { drid: 1 },
 			...(limit && { limit }),
-		}).forEach(({ drid }: IMessageDiscussion) => deleteRoom(drid));
-	}
+		});
 
-	if (!ignoreThreads) {
-		const threads = new Set();
-		Messages.findThreadsByRoomIdPinnedTimestampAndUsers(
-			{ rid, pinned: excludePinned, ignoreDiscussion, ts, users: fromUsers },
-			{ fields: { _id: 1 } },
-		).forEach(({ _id }: { _id: string }) => threads.add(_id));
-
-		if (threads.size > 0) {
-			Subscriptions.removeUnreadThreadsByRoomId(rid, [...threads]);
+		for await (const { drid } of discussionsCursor) {
+			if (!drid) {
+				continue;
+			}
+			await deleteRoom(drid);
 		}
 	}
 
-	const count = await MessagesRaw.removeByIdPinnedTimestampLimitAndUsers(
+	if (!ignoreThreads) {
+		const threads = new Set<string>();
+
+		await Messages.findThreadsByRoomIdPinnedTimestampAndUsers(
+			{ rid, pinned: excludePinned, ignoreDiscussion, ts, users: fromUsers },
+			{ projection: { _id: 1 } },
+		).forEach(({ _id }) => {
+			threads.add(_id);
+		});
+
+		if (threads.size > 0) {
+			const subscriptionIds: string[] = (
+				await Subscriptions.findUnreadThreadsByRoomId(rid, [...threads], { projection: { _id: 1 } }).toArray()
+			).map(({ _id }) => _id);
+
+			const { modifiedCount } = await Subscriptions.removeUnreadThreadsByRoomId(rid, [...threads]);
+			if (modifiedCount) {
+				subscriptionIds.forEach((id) => notifyOnSubscriptionChangedById(id));
+			}
+		}
+	}
+
+	const selectedMessageIds = limit
+		? await Messages.findByIdPinnedTimestampLimitAndUsers(rid, excludePinned, ignoreDiscussion, ts, limit, fromUsers, ignoreThreads)
+		: undefined;
+	const count = await Messages.removeByIdPinnedTimestampLimitAndUsers(
 		rid,
 		excludePinned,
 		ignoreDiscussion,
@@ -82,17 +106,34 @@ export async function cleanRoomHistory({
 		limit,
 		fromUsers,
 		ignoreThreads,
+		selectedMessageIds,
 	);
+
+	if (!limit) {
+		const uids = await Users.findByUsernames(fromUsers, { projection: { _id: 1 } })
+			.map((user) => user._id)
+			.toArray();
+		await ReadReceipts.removeByIdPinnedTimestampLimitAndUsers(rid, excludePinned, ignoreDiscussion, ts, uids, ignoreThreads);
+	} else if (selectedMessageIds) {
+		await ReadReceipts.removeByMessageIds(selectedMessageIds);
+	}
+
 	if (count) {
-		const lastMessage = await MessagesRaw.getLastVisibleMessageSentWithNoTypeByRoomId(rid);
-		await Rooms.resetLastMessageById(rid, lastMessage);
+		const lastMessage = await Messages.getLastVisibleUserMessageSentByRoomId(rid);
+
+		await Rooms.resetLastMessageById(rid, lastMessage, -count);
+
+		void notifyOnRoomChangedById(rid);
+
 		void api.broadcast('notify.deleteMessageBulk', rid, {
 			rid,
 			excludePinned,
 			ignoreDiscussion,
 			ts,
 			users: fromUsers,
+			ids: selectedMessageIds,
 		});
 	}
+
 	return count;
 }

@@ -1,23 +1,30 @@
+import { isMessageFromVisitor } from '@rocket.chat/core-typings';
+import { Messages, Rooms, Users } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
 
-import { Messages, Rooms, Users } from '../../../models/server';
-import { transformMappedData } from '../../../../ee/lib/misc/transformMappedData';
+import { cachedFunction } from './cachedFunction';
+import { transformMappedData } from './transformMappedData';
 
 export class AppMessagesConverter {
+	mem = new WeakMap();
+
 	constructor(orch) {
 		this.orch = orch;
 	}
 
-	convertById(msgId) {
-		const msg = Messages.findOneById(msgId);
+	async convertById(msgId) {
+		const msg = await Messages.findOneById(msgId);
 
 		return this.convertMessage(msg);
 	}
 
-	convertMessage(msgObj) {
+	async convertMessageRaw(msgObj) {
 		if (!msgObj) {
 			return undefined;
 		}
+
+		const { attachments, ...message } = msgObj;
+		const getAttachments = async () => this._convertAttachmentsToApp(attachments);
 
 		const map = {
 			id: '_id',
@@ -36,12 +43,62 @@ export class AppMessagesConverter {
 			groupable: 'groupable',
 			token: 'token',
 			blocks: 'blocks',
-			room: (message) => {
-				const result = this.orch.getConverters().get('rooms').convertById(message.rid);
+			roomId: 'rid',
+			editor: 'editedBy',
+			attachments: getAttachments,
+			sender: 'u',
+			threadMsgCount: 'tcount',
+			type: 't',
+		};
+
+		return transformMappedData(message, map);
+	}
+
+	async convertMessage(msgObj, cacheObj = msgObj) {
+		if (!msgObj) {
+			return undefined;
+		}
+
+		const cache =
+			this.mem.get(cacheObj) ??
+			new Map([
+				['room', cachedFunction(this.orch.getConverters().get('rooms').convertById.bind(this.orch.getConverters().get('rooms')))],
+				[
+					'user.convertById',
+					cachedFunction(this.orch.getConverters().get('users').convertById.bind(this.orch.getConverters().get('users'))),
+				],
+				[
+					'user.convertToApp',
+					cachedFunction(this.orch.getConverters().get('users').convertToApp.bind(this.orch.getConverters().get('users'))),
+				],
+			]);
+
+		this.mem.set(cacheObj, cache);
+
+		const map = {
+			id: '_id',
+			threadId: 'tmid',
+			reactions: 'reactions',
+			parseUrls: 'parseUrls',
+			text: 'msg',
+			createdAt: 'ts',
+			updatedAt: '_updatedAt',
+			editedAt: 'editedAt',
+			emoji: 'emoji',
+			avatarUrl: 'avatar',
+			alias: 'alias',
+			file: 'file',
+			customFields: 'customFields',
+			groupable: 'groupable',
+			token: 'token',
+			blocks: 'blocks',
+			type: 't',
+			room: async (message) => {
+				const result = await cache.get('room')(message.rid);
 				delete message.rid;
 				return result;
 			},
-			editor: (message) => {
+			editor: async (message) => {
 				const { editedBy } = message;
 				delete message.editedBy;
 
@@ -49,48 +106,55 @@ export class AppMessagesConverter {
 					return undefined;
 				}
 
-				return this.orch.getConverters().get('users').convertById(editedBy._id);
+				return cache.get('user.convertById')(editedBy._id);
 			},
-			attachments: (message) => {
-				const result = this._convertAttachmentsToApp(message.attachments);
+			attachments: async (message) => {
+				const result = await this._convertAttachmentsToApp(message.attachments);
 				delete message.attachments;
 				return result;
 			},
-			sender: (message) => {
+			sender: async (message) => {
 				if (!message.u || !message.u._id) {
 					return undefined;
 				}
 
-				let user = this.orch.getConverters().get('users').convertById(message.u._id);
-
-				// When the sender of the message is a Guest (livechat) and not a user
-				if (!user) {
-					user = this.orch.getConverters().get('users').convertToApp(message.u);
-				}
+				// When the message contains token, means the message is from the visitor(omnichannel)
+				const user = await (isMessageFromVisitor(msgObj)
+					? cache.get('user.convertToApp')(message.u)
+					: cache.get('user.convertById')(message.u._id));
 
 				delete message.u;
 
-				return user;
+				/**
+				 * Old System Messages from visitor doesn't have the `token` field, to not return
+				 * `sender` as undefined, so we need to add this fallback here.
+				 */
+
+				return user || cache.get('user.convertToApp')(message.u);
 			},
 		};
 
 		return transformMappedData(msgObj, map);
 	}
 
-	convertAppMessage(message) {
-		if (!message || !message.room) {
+	async convertAppMessage(message, isPartial = false) {
+		if (!message) {
 			return undefined;
 		}
 
-		const room = Rooms.findOneById(message.room.id);
+		let rid;
+		if (message.room?.id) {
+			const room = await Rooms.findOneById(message.room.id, { projection: { _id: 1 } });
+			rid = room?._id;
+		}
 
-		if (!room) {
+		if (!rid && !isPartial) {
 			throw new Error('Invalid room provided on the message.');
 		}
 
 		let u;
-		if (message.sender && message.sender.id) {
-			const user = Users.findOneById(message.sender.id);
+		if (message.sender?.id) {
+			const user = await Users.findOneById(message.sender.id);
 
 			if (user) {
 				u = {
@@ -109,7 +173,7 @@ export class AppMessagesConverter {
 
 		let editedBy;
 		if (message.editor) {
-			const editor = Users.findOneById(message.editor.id);
+			const editor = await Users.findOneById(message.editor.id);
 			editedBy = {
 				_id: editor._id,
 				username: editor.username,
@@ -118,14 +182,27 @@ export class AppMessagesConverter {
 
 		const attachments = this._convertAppAttachments(message.attachments);
 
+		let _id = message.id;
+		let ts = message.createdAt;
+
+		if (!isPartial) {
+			if (!message.id) {
+				_id = Random.id();
+			}
+
+			if (!message.createdAt) {
+				ts = new Date();
+			}
+		}
+
 		const newMessage = {
-			_id: message.id || Random.id(),
+			_id,
 			...('threadId' in message && { tmid: message.threadId }),
-			rid: room._id,
+			rid,
 			u,
 			msg: message.text,
-			ts: message.createdAt || new Date(),
-			_updatedAt: message.updatedAt || new Date(),
+			ts,
+			_updatedAt: message.updatedAt,
 			...(editedBy && { editedBy }),
 			...('editedAt' in message && { editedAt: message.editedAt }),
 			...('emoji' in message && { emoji: message.emoji }),
@@ -140,7 +217,17 @@ export class AppMessagesConverter {
 			...('token' in message && { token: message.token }),
 		};
 
-		return Object.assign(newMessage, message._unmappedProperties_);
+		if (isPartial) {
+			Object.entries(newMessage).forEach(([key, value]) => {
+				if (typeof value === 'undefined') {
+					delete newMessage[key];
+				}
+			});
+		} else {
+			Object.assign(newMessage, message._unmappedProperties_);
+		}
+
+		return newMessage;
 	}
 
 	_convertAppAttachments(attachments) {
@@ -185,7 +272,7 @@ export class AppMessagesConverter {
 		);
 	}
 
-	_convertAttachmentsToApp(attachments) {
+	async _convertAttachmentsToApp(attachments) {
 		if (typeof attachments === 'undefined' || !Array.isArray(attachments)) {
 			return undefined;
 		}
@@ -237,6 +324,6 @@ export class AppMessagesConverter {
 			},
 		};
 
-		return attachments.map((attachment) => transformMappedData(attachment, map));
+		return Promise.all(attachments.map(async (attachment) => transformMappedData(attachment, map)));
 	}
 }

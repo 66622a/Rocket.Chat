@@ -1,14 +1,14 @@
-import { Meteor } from 'meteor/meteor';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IMessage, IRoom } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Messages, Rooms } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import { canAccessRoomAsync } from '../../../authorization/server';
 import { settings } from '../../../settings/server';
 
 const MAX_LIMIT = 100;
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		getThreadsList(params: { rid: IRoom['_id']; limit?: number; skip?: number }): IMessage[];
@@ -27,7 +27,7 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error('error-not-allowed', 'Threads Disabled', { method: 'getThreadsList' });
 		}
 
-		const user = Meteor.user();
+		const user = await Meteor.userAsync();
 		const room = await Rooms.findOneById(rid);
 
 		if (!user || !room || !(await canAccessRoomAsync(room, user))) {

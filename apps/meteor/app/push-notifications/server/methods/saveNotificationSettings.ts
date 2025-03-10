@@ -1,15 +1,16 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { ISubscription } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { Subscriptions } from '../../../models/server';
-import { getUserNotificationPreference } from '../../../utils/server';
+import { notifyOnSubscriptionChangedById } from '../../../lib/server/lib/notifyListener';
+import { getUserNotificationPreference } from '../../../utils/server/getUserNotificationPreference';
 
-const saveAudioNotificationValue = (subId: ISubscription['_id'], value: unknown) =>
+const saveAudioNotificationValue = (subId: ISubscription['_id'], value: string) =>
 	value === 'default' ? Subscriptions.clearAudioNotificationValueById(subId) : Subscriptions.updateAudioNotificationValueById(subId, value);
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		saveNotificationSettings(
@@ -31,8 +32,9 @@ declare module '@rocket.chat/ui-contexts' {
 }
 
 Meteor.methods<ServerMethods>({
-	saveNotificationSettings(roomId, field, value) {
-		if (!Meteor.userId()) {
+	async saveNotificationSettings(roomId, field, value) {
+		const userId = Meteor.userId();
+		if (!userId) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 				method: 'saveNotificationSettings',
 			});
@@ -41,9 +43,16 @@ Meteor.methods<ServerMethods>({
 		check(field, String);
 		check(value, String);
 
-		const getNotificationPrefValue = (field: string, value: unknown) => {
+		const getNotificationPrefValue = async (field: string, value: unknown) => {
 			if (value === 'default') {
-				const userPref = getUserNotificationPreference(Meteor.userId(), field);
+				const userId = Meteor.userId();
+				if (!userId) {
+					throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+						method: 'saveNotificationSettings',
+					});
+				}
+
+				const userPref = await getUserNotificationPreference(userId, field);
 				return userPref?.origin === 'server' ? null : userPref;
 			}
 			return { value, origin: 'subscription' };
@@ -51,41 +60,42 @@ Meteor.methods<ServerMethods>({
 
 		const notifications = {
 			desktopNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('desktop', value),
+						await getNotificationPrefValue('desktop', value),
 						'desktopNotifications',
 						'desktopPrefOrigin',
 					),
 			},
 			mobilePushNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('mobile', value),
+						await getNotificationPrefValue('mobile', value),
 						'mobilePushNotifications',
 						'mobilePrefOrigin',
 					),
 			},
 			emailNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('email', value),
+						await getNotificationPrefValue('email', value),
 						'emailNotifications',
 						'emailPrefOrigin',
 					),
 			},
 			unreadAlert: {
-				updateMethod: (subscription: ISubscription, value: unknown) => Subscriptions.updateUnreadAlertById(subscription._id, value),
+				// @ts-expect-error - Check types of model. The way the method is defined makes difficult to type it, check proper types for `value`
+				updateMethod: (subscription: ISubscription, value: string) => Subscriptions.updateUnreadAlertById(subscription._id, value),
 			},
 			disableNotifications: {
 				updateMethod: (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateDisableNotificationsById(subscription._id, value === '1'),
 			},
 			hideUnreadStatus: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: (subscription: ISubscription, value: string) =>
 					Subscriptions.updateHideUnreadStatusById(subscription._id, value === '1'),
 			},
 			hideMentionStatus: {
@@ -97,7 +107,7 @@ Meteor.methods<ServerMethods>({
 					Subscriptions.updateMuteGroupMentions(subscription._id, value === '1'),
 			},
 			audioNotificationValue: {
-				updateMethod: (subscription: ISubscription, value: unknown) => saveAudioNotificationValue(subscription._id, value),
+				updateMethod: (subscription: ISubscription, value: string) => saveAudioNotificationValue(subscription._id, value),
 			},
 		};
 		const isInvalidNotification = !Object.keys(notifications).includes(field);
@@ -116,26 +126,41 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const subscription = Subscriptions.findOneByRoomIdAndUserId(roomId, Meteor.userId());
+		const subscription = await Subscriptions.findOneByRoomIdAndUserId(roomId, userId);
 		if (!subscription) {
 			throw new Meteor.Error('error-invalid-subscription', 'Invalid subscription', {
 				method: 'saveNotificationSettings',
 			});
 		}
 
-		notifications[field].updateMethod(subscription, value);
+		const updateResponse = await notifications[field].updateMethod(subscription, value);
+		if (updateResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
 
 		return true;
 	},
 
-	saveAudioNotificationValue(rid, value) {
-		const subscription = Subscriptions.findOneByRoomIdAndUserId(rid, Meteor.userId());
+	async saveAudioNotificationValue(rid, value) {
+		const userId = Meteor.userId();
+		if (!userId) {
+			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+				method: 'saveAudioNotificationValue',
+			});
+		}
+
+		const subscription = await Subscriptions.findOneByRoomIdAndUserId(rid, userId);
 		if (!subscription) {
 			throw new Meteor.Error('error-invalid-subscription', 'Invalid subscription', {
 				method: 'saveAudioNotificationValue',
 			});
 		}
-		saveAudioNotificationValue(subscription._id, value);
+
+		const saveAudioNotificationResponse = await saveAudioNotificationValue(subscription._id, value);
+		if (saveAudioNotificationResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
+
 		return true;
 	},
 });

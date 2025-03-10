@@ -1,5 +1,5 @@
-import { AppInterface } from '@rocket.chat/apps-engine/definition/metadata';
 import { LivechatTransferEventType } from '@rocket.chat/apps-engine/definition/livechat';
+import { AppInterface } from '@rocket.chat/apps-engine/definition/metadata';
 
 export class AppListenerBridge {
 	constructor(orch) {
@@ -10,6 +10,7 @@ export class AppListenerBridge {
 		// eslint-disable-next-line complexity
 		const method = (() => {
 			switch (event) {
+				case AppInterface.IPostSystemMessageSent:
 				case AppInterface.IPreMessageSentPrevent:
 				case AppInterface.IPreMessageSentExtend:
 				case AppInterface.IPreMessageSentModify:
@@ -69,7 +70,7 @@ export class AppListenerBridge {
 	}
 
 	async messageEvent(inte, message, ...payload) {
-		const msg = this.orch.getConverters().get('messages').convertMessage(message);
+		const msg = await this.orch.getConverters().get('messages').convertMessage(message);
 
 		const params = (() => {
 			switch (inte) {
@@ -129,7 +130,7 @@ export class AppListenerBridge {
 	}
 
 	async roomEvent(inte, room, ...payload) {
-		const rm = this.orch.getConverters().get('rooms').convertRoom(room);
+		const rm = await this.orch.getConverters().get('rooms').convertRoom(room);
 
 		const params = (() => {
 			switch (inte) {
@@ -143,10 +144,11 @@ export class AppListenerBridge {
 					};
 				case AppInterface.IPreRoomUserLeave:
 				case AppInterface.IPostRoomUserLeave:
-					const [leavingUser] = payload;
+					const [leavingUser, removedBy] = payload;
 					return {
 						room: rm,
 						leavingUser: this.orch.getConverters().get('users').convertToApp(leavingUser),
+						removedBy: this.orch.getConverters().get('users').convertToApp(removedBy),
 					};
 				default:
 					return rm;
@@ -169,7 +171,7 @@ export class AppListenerBridge {
 					.getManager()
 					.getListenerManager()
 					.executeListener(inte, {
-						room: this.orch.getConverters().get('rooms').convertRoom(data.room),
+						room: await this.orch.getConverters().get('rooms').convertRoom(data.room),
 						agent: this.orch.getConverters().get('users').convertToApp(data.user),
 					});
 			case AppInterface.IPostLivechatRoomTransferred:
@@ -180,19 +182,22 @@ export class AppListenerBridge {
 					.getListenerManager()
 					.executeListener(inte, {
 						type: data.type,
-						room: this.orch.getConverters().get('rooms').convertById(data.room),
-						from: this.orch.getConverters().get(converter).convertById(data.from),
-						to: this.orch.getConverters().get(converter).convertById(data.to),
+						room: await this.orch.getConverters().get('rooms').convertById(data.room),
+						from: await this.orch.getConverters().get(converter).convertById(data.from),
+						to: await this.orch.getConverters().get(converter).convertById(data.to),
 					});
 			case AppInterface.IPostLivechatGuestSaved:
 				return this.orch
 					.getManager()
 					.getListenerManager()
-					.executeListener(inte, this.orch.getConverters().get('visitors').convertById(data));
+					.executeListener(inte, await this.orch.getConverters().get('visitors').convertById(data));
 			case AppInterface.IPostLivechatRoomSaved:
-				return this.orch.getManager().getListenerManager().executeListener(inte, this.orch.getConverters().get('rooms').convertById(data));
+				return this.orch
+					.getManager()
+					.getListenerManager()
+					.executeListener(inte, await this.orch.getConverters().get('rooms').convertById(data));
 			default:
-				const room = this.orch.getConverters().get('rooms').convertRoom(data);
+				const room = await this.orch.getConverters().get('rooms').convertRoom(data);
 
 				return this.orch.getManager().getListenerManager().executeListener(inte, room);
 		}

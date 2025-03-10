@@ -1,11 +1,11 @@
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
 import * as Mailer from '../../../mailer/server/api';
 import { settings } from '../../../settings/server';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		sendSMTPTestEmail(): {
@@ -16,26 +16,26 @@ declare module '@rocket.chat/ui-contexts' {
 }
 
 Meteor.methods<ServerMethods>({
-	sendSMTPTestEmail() {
+	async sendSMTPTestEmail() {
 		if (!Meteor.userId()) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 				method: 'sendSMTPTestEmail',
 			});
 		}
-		const user = Meteor.user();
+		const user = await Meteor.userAsync();
 		if (!user?.emails?.[0]?.address) {
 			throw new Meteor.Error('error-invalid-email', 'Invalid email', {
 				method: 'sendSMTPTestEmail',
 			});
 		}
 		try {
-			Mailer.send({
+			await Mailer.send({
 				to: user.emails[0].address,
 				from: settings.get('From_Email'),
 				subject: 'SMTP Test Email',
 				html: '<p>You have successfully sent an email</p>',
 			});
-		} catch ({ message }) {
+		} catch ({ message }: any) {
 			throw new Meteor.Error('error-email-send-failed', `Error trying to send email: ${message}`, {
 				method: 'sendSMTPTestEmail',
 				message,
